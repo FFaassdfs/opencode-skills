@@ -31,6 +31,14 @@ def export_via_screenshot(html_path: Path, pdf_path: Path):
         page = browser.new_page(viewport={"width": 1400, "height": 1600}, device_scale_factor=2)
         page.goto(html_path.resolve().as_uri(), wait_until="networkidle")
         page.wait_for_timeout(5000)
+        section_boxes = page.evaluate(
+            """
+            () => Array.from(document.querySelectorAll('section')).map(el => {
+                const r = el.getBoundingClientRect();
+                return { top: window.scrollY + r.top, height: r.height };
+            })
+            """
+        )
         png_bytes = page.screenshot(full_page=True, type="png")
         browser.close()
 
@@ -42,12 +50,22 @@ def export_via_screenshot(html_path: Path, pdf_path: Path):
     usable_height = page_height - margin * 2
     scale = usable_width / img_width
     slice_height_px = int(usable_height / scale)
+    section_breaks = []
+    for box in section_boxes:
+        top_px = int(box["top"] * 2)
+        if 0 < top_px < img_height:
+            section_breaks.append(top_px)
+    section_breaks = sorted(set(section_breaks))
 
     pdf = canvas.Canvas(str(pdf_path), pagesize=A4)
     top = page_height - margin
     y = 0
     while y < img_height:
-        lower = min(y + slice_height_px, img_height)
+        target = min(y + slice_height_px, img_height)
+        candidates = [bp for bp in section_breaks if y + int(slice_height_px * 0.6) <= bp <= target]
+        lower = max(candidates) if candidates else target
+        if lower <= y:
+            lower = target
         crop = image.crop((0, y, img_width, lower))
         temp = BytesIO()
         crop.save(temp, format="PNG")
