@@ -419,3 +419,262 @@ uf_xxxxx (自定义表单主表)                                  │
     modedatacreater ─────────────────────────────────────┘
     formmodeid ──→ modeinfo.id
 ```
+
+---
+
+### 六、附件与操作日志表
+
+#### DownloadLog（附件下载记录，约 67 万行）
+
+记录用户从知识文档中心**下载附件**的行为日志。
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| userid | int | 下载人ID → HrmResource.id |
+| username | varchar(60) | 下载人姓名（冗余字段） |
+| downloadtime | char(19) | 下载时间（格式：yyyy-MM-dd HH:mm:ss） |
+| imageid | int | 附件文件ID（对应知识文档中心中的文件） |
+| imagename | varchar(1000) | 附件文件名（含扩展名） |
+| docid | int | 所属文档ID |
+| docname | varchar(1000) | 所属文档名（不含扩展名） |
+| clientaddress | varchar(1001) | 下载者IP地址 |
+
+**常用查询：**
+```sql
+-- 查询某人最近的下载记录
+SELECT TOP 20 dl.downloadtime, dl.imagename, dl.docname, dl.clientaddress
+FROM DownloadLog dl
+WHERE dl.userid = (SELECT id FROM HrmResource WHERE loginid = 'zhangsan')
+ORDER BY dl.downloadtime DESC
+
+-- 查询某文件被下载次数
+SELECT imagename, COUNT(*) as download_count
+FROM DownloadLog
+WHERE imagename LIKE '%合同%'
+GROUP BY imagename
+ORDER BY download_count DESC
+```
+
+---
+
+#### DocDetailLog（文档操作详细日志，约 125 万行）
+
+记录知识文档中心所有文档的**全量操作行为**（阅读、新建、修改、删除、下载等）。
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| id | int | 主键 |
+| docid | int | 文档ID |
+| docsubject | varchar(1000) | 文档标题 |
+| doccreater | int | 文档创建人 → HrmResource.id |
+| operatetype | varchar | **操作类型代码**（见下表） |
+| operatedesc | varchar(1000) | 操作说明（通常为空） |
+| operateuserid | int | 操作人 → HrmResource.id |
+| operatedate | char(10) | 操作日期 |
+| operatetime | char(8) | 操作时间 |
+| clientaddress | varchar(256) | 操作者IP |
+| usertype | char(1) | 用户类型（1=普通用户） |
+| creatertype | char(1) | 创建人类型 |
+| operateitem | varchar(1000) | 操作项目（301=文档中心） |
+
+**operatetype 枚举值（来自 ecology_log_operatetype 表）：**
+
+| operatetype | 含义 |
+|-------------|------|
+| 0 | 阅读 |
+| 1 | 新建 |
+| 2 | 修改 |
+| 3 | 删除 |
+| 12 | 复制 |
+| 13 | 发布 |
+| 14 | 失效 |
+| 15 | 作废 |
+| 16 | 添加新版本 |
+| 18 | 自动签出 |
+| 20 | 自动签入 |
+| 21 | 打印 |
+| 22 | 下载 |
+| 23 | 更改文档状态 |
+
+> 注意：operatetype=0（阅读）和 operatetype=22（下载）是两种不同行为。
+> 文件下载行为优先使用 `DownloadLog` 表（更直接），DocDetailLog 可用于综合分析。
+
+**常用查询：**
+```sql
+-- 统计某段时间内各操作类型的数量
+SELECT operatetype, COUNT(*) as cnt
+FROM DocDetailLog
+WHERE operatedate >= '2026-01-01'
+GROUP BY operatetype
+ORDER BY cnt DESC
+
+-- 查询谁在下载文档（operatetype=22）
+SELECT dl.docsubject, hr.lastname, dl.operatedate, dl.operatetime
+FROM DocDetailLog dl
+JOIN HrmResource hr ON dl.operateuserid = hr.id
+WHERE dl.operatetype = '22'
+ORDER BY dl.operatedate DESC, dl.operatetime DESC
+```
+
+---
+
+#### ImageFileLog（文件重命名记录，约 6785 行）
+
+记录知识文档中心中附件文件**被重命名**的历史。
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| imagefileid | int | 附件文件ID |
+| oldfilename | varchar(2000) | 改名前的文件名 |
+| newfilename | varchar(2000) | 改名后的文件名 |
+| userid | int | 操作人 → HrmResource.id |
+| operatedate | varchar(10) | 操作日期 |
+| operatetime | varchar(8) | 操作时间 |
+
+---
+
+#### DocPrintLog（文档打印记录，0 行，暂无数据）
+
+| 字段名 | 说明 |
+|--------|------|
+| id | 主键 |
+| printUserId | 打印人 → HrmResource.id |
+| printDocId | 打印的文档ID |
+| printDate | 打印日期 |
+| printTime | 打印时间 |
+| printNum | 打印份数 |
+| clientAddress | 打印者IP |
+
+---
+
+#### ecology_log_operatetype（操作类型字典表）
+
+存储 DocDetailLog.operatetype 的含义映射（全局字典）。
+
+| 字段名 | 说明 |
+|--------|------|
+| id | 主键 |
+| operatetype | 操作类型代码 |
+| mouldid | 模板ID（NULL=通用，1=文档模板，15=其他） |
+| operatetypelabel | 多语言Label ID |
+| operatetypedesc | 操作名称（中文） |
+
+```sql
+-- 查询所有操作类型含义
+SELECT operatetype, operatetypedesc FROM ecology_log_operatetype
+WHERE mouldid IS NULL OR mouldid = 1
+ORDER BY operatetype
+```
+
+---
+
+### 七、中文表名与字段中文名的存储位置
+
+泛微 ecology 的中文标签分两层存储，**没有直接在 uf_* 表的列上标注中文**，需通过元数据表反查。
+
+#### 表（模型）的中文名 → `modeinfo`
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 模型ID（即 `formmodeid`，uf_* 主表通用字段） |
+| `modename` | **表的中文名**（如 `已投项目`、`律师管理-律所库`） |
+| `attitle` | 表的显示标题（通常与 modename 相同） |
+| `formid` | 表单ID（负数），连接字段定义的关键外键 |
+
+```sql
+-- 按中文名查找对应模型
+SELECT id, modename, formid FROM modeinfo WHERE modename LIKE '%投资%'
+
+-- 查某 uf_* 表对应的模型（通过 formmodeid 反查）
+SELECT m.modename, m.formid
+FROM modeinfo m
+WHERE m.id = (SELECT TOP 1 formmodeid FROM uf_HCTZXM_YTXM)
+```
+
+---
+
+#### 字段的中文名 → `workflow_billfield` + `HtmlLabelInfo`
+
+**关联链条（三表两跳）：**
+
+```
+modeinfo.formid（如 -1548）
+    ↓  billid = formid
+workflow_billfield.fieldname   ← 数据库列名（如 xmmc）
+workflow_billfield.fieldlabel  ← 多语言ID（如 -162103，负整数）
+    ↓  indexid = fieldlabel，languageid = 7
+HtmlLabelInfo.labelname        ← 中文标签文本（如 "1.01项目名称"）
+```
+
+**`workflow_billfield` 关键字段：**
+
+| 字段 | 说明 |
+|------|------|
+| `billid` | = `modeinfo.formid`（负数） |
+| `fieldname` | 数据库列名（对应 uf_* 表的实际列） |
+| `fieldlabel` | 多语言文本ID → `HtmlLabelInfo.indexid` |
+| `fielddbtype` | 数据库类型（varchar/int/decimal 等） |
+| `type` | 字段类型：1=文本，2=日期，3=数值，161=单选，171=关联流程，402=年份 |
+| `dsporder` | 表单中的显示顺序 |
+
+**`HtmlLabelInfo` 关键字段：**
+
+| 字段 | 说明 |
+|------|------|
+| `indexid` | 多语言ID（负整数，与 `fieldlabel` 对应） |
+| `labelname` | 标签文本 |
+| `languageid` | 语言：**7=简体中文**，8=繁体中文，9=英文 |
+
+**完整查询模板（获取任意 uf_* 表的字段中文名）：**
+
+```sql
+-- 第一步：通过表名找 formid
+-- （方法A：直接查 modeinfo）
+SELECT id, modename, formid FROM modeinfo WHERE modename LIKE '%已投项目%'
+-- 得到 formid = -1548
+
+-- 第二步：查该表所有字段的中文标签
+SELECT
+    wbf.fieldname    AS db列名,
+    hli.labelname    AS 中文标签,
+    wbf.fielddbtype  AS 数据库类型,
+    wbf.type         AS 字段类型,
+    wbf.dsporder     AS 显示顺序
+FROM workflow_billfield wbf
+LEFT JOIN HtmlLabelInfo hli
+    ON wbf.fieldlabel = hli.indexid AND hli.languageid = 7
+WHERE wbf.billid = -1548       -- 替换为目标 formid
+ORDER BY wbf.type, wbf.dsporder
+```
+
+**一步到位（已知 uf_* 表名）：**
+
+```sql
+SELECT
+    wbf.fieldname    AS db列名,
+    hli.labelname    AS 中文标签,
+    wbf.fielddbtype  AS 数据库类型,
+    wbf.dsporder     AS 显示顺序
+FROM modeinfo m
+JOIN workflow_billfield wbf ON wbf.billid = m.formid
+LEFT JOIN HtmlLabelInfo hli
+    ON wbf.fieldlabel = hli.indexid AND hli.languageid = 7
+WHERE m.modename = '已投项目'    -- 替换为目标模型名
+ORDER BY wbf.type, wbf.dsporder
+```
+
+**补充表间关系：**
+
+```
+modeinfo (模型元数据)
+    formid ──→ workflow_billfield.billid（字段定义）
+                   fieldlabel ──→ HtmlLabelInfo.indexid（中文文本，languageid=7）
+                   fieldname  ←── uf_xxxxx 的实际列名
+
+uf_xxxxx.formmodeid ──→ modeinfo.id（反查中文表名）
+```
+
+> **注意事项：**
+> - `modeinfo.formid` 通常为负数，`workflow_billfield.billid` 与之完全相同（包括负号）
+> - `HtmlLabelInfo` 共约 28 万条记录，languageid=7（简体中文）约 14.7 万条
+> - uf_* 表本身的列名（如 `xmmc`）是拼音缩写，**没有内置中文注释**，必须通过上述三表反查
